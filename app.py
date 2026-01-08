@@ -65,25 +65,32 @@ body { font-family: sans-serif; background:#f4f6f8; padding:16px; }
 경과 시간: {{ d.elapsed }}<br><br>
 
 <!-- 버튼 및 종료 폼 -->
-<a class="btn view" href="/device/{{ id }}">화면 보기</a>
-<a class="btn move" href="/move/{{ id }}">직원 이동</a>
-<a class="btn clear" onclick="toggleReasonForm('{{ id }}')">종료</a>
+<div class="card" style="border-left: 5px solid #d32f2f;">
+    <b>{{ id }}</b> ({{ d.status }})<br>
+    요청 시간: {{ d.time_str }}<br>
+    경과 시간: {{ d.elapsed }}<br><br>
 
-<div id="reason-form-{{ id }}" style="display:none; margin-top:8px;">
-<form action="/clear/{{ id }}" method="post">
-<select name="reason" onchange="toggleOtherInput(this)">
-{% for r in reasons %}
-<option value="{{ r }}">{{ r }}</option>
-{% endfor %}
-</select>
-<input type="text" name="other_reason" placeholder="직접 입력" style="display:none;">
-<input type="submit" value="확인" class="btn clear">
-</form>
+    <div style="display: flex; gap: 10px; align-items: center;">
+        <a class="btn view" href="/device/{{ id }}">화면 보기</a>
+        <a class="btn move" href="/move/{{ id }}">직원 이동</a>
+        
+        <button class="btn clear" onclick="toggleReasonForm('{{ id }}')" style="background-color: #d32f2f !important; border: none;">
+            종료하기
+        </button>
+    </div>
+
+    <div id="reason-form-{{ id }}" style="display:none; margin-top:15px; padding:10px; border:1px dashed #ccc; background:#fafafa;">
+        <form action="/clear/{{ id }}" method="post">
+            <select name="reason" onchange="toggleOtherInput(this)" class="select-reason">
+                {% for r in reasons %}
+                <option value="{{ r }}">{{ r }}</option>
+                {% endfor %}
+            </select>
+            <input type="text" name="other_reason" placeholder="직접 입력" style="display:none; padding:5px;">
+            <input type="submit" value="완료 확인" class="btn clear" style="background-color: #d32f2f;">
+        </form>
+    </div>
 </div>
-</div>
-{% else %}
-<p>현재 요청이 없습니다.</p>
-{% endfor %}
 
 <hr>
 <h1>요청 기록</h1>
@@ -219,6 +226,7 @@ def clear(device_id):
 # ================== 서버 실행 ==================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
