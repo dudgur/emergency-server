@@ -2,14 +2,12 @@
 from flask import Flask, request, redirect, render_template_string, Response, send_file, jsonify
 import os
 from datetime import datetime
-import time
 
 app = Flask(__name__)
 
 devices = {}
 history = []
-clients = []
-device_commands = {}  # 👈 기기에 내릴 명령 저장
+device_commands = {}  # 기기에 내릴 명령 저장
 
 REASONS = [
     "마트에서 이동 도움",
@@ -34,6 +32,7 @@ def elapsed_time_str(start_time, end_time=None):
     else:
         return f"{s//3600}시간 {(s%3600)//60}분"
 
+# ================== 메인 페이지 ==================
 @app.route("/")
 def index():
     return render_template_string("""
@@ -50,6 +49,8 @@ body { font-family: sans-serif; background:#f4f6f8; padding:16px; }
 .move { background:#f57c00; }
 .clear { background:#d32f2f; }
 .view { background:#1976d2; }
+.form-inline { display:inline-block; margin:0; }
+.select-reason { padding:6px; border-radius:6px; border:1px solid #ccc; margin-right:6px; }
 </style>
 </head>
 <body>
@@ -62,17 +63,19 @@ body { font-family: sans-serif; background:#f4f6f8; padding:16px; }
 요청 시간: {{ d.time_str }}<br>
 경과 시간: {{ d.elapsed }}<br><br>
 
+<!-- 버튼과 종료 선택 박스를 한 줄에 -->
 <a class="btn view" href="/device/{{ id }}">화면 보기</a>
 <a class="btn move" href="/move/{{ id }}">직원 이동</a>
 
-<form action="/clear/{{ id }}" method="post" style="display:inline;">
-<select name="reason">
+<form class="form-inline" action="/clear/{{ id }}" method="post">
+<select class="select-reason" name="reason">
 {% for r in reasons %}
 <option value="{{ r }}">{{ r }}</option>
 {% endfor %}
 </select>
 <input class="btn clear" type="submit" value="종료">
 </form>
+
 </div>
 {% else %}
 <p>현재 요청 없음</p>
@@ -101,13 +104,17 @@ history=history,
 reasons=REASONS
 )
 
+# ================== 화면 보기 페이지 ==================
 @app.route("/device/<device_id>")
 def view_device(device_id):
     return f"""
 <html>
 <body style="background:black;color:white;text-align:center">
 <h2>{device_id}</h2>
-<img id="cam" src="/image/{device_id}" width="720">
+<img id="cam" src="/image/{device_id}" width="720"><br><br>
+
+<a href="/" style="display:inline-block;padding:8px 12px;background:#1976d2;color:white;border-radius:6px;text-decoration:none;">돌아가기</a>
+
 <script>
 setInterval(function(){{
   document.getElementById("cam").src="/image/{device_id}?t="+new Date().getTime();
@@ -117,6 +124,7 @@ setInterval(function(){{
 </html>
 """
 
+# ================== 이미지 업로드 ==================
 @app.route("/upload", methods=["POST"])
 def upload():
     device_id = request.form.get("device_id")
@@ -134,6 +142,7 @@ def get_image(device_id):
         return "No Image", 404
     return send_file(path, mimetype="image/jpeg")
 
+# ================== 긴급 요청 등록 ==================
 @app.route("/emergency", methods=["POST"])
 def emergency():
     data = request.get_json()
@@ -146,20 +155,22 @@ def emergency():
     device_commands[device_id] = "NONE"
     return "OK"
 
-# 🔥 기기가 명령 물어보는 API
+# ================== 기기 명령 확인 ==================
 @app.route("/command/<device_id>")
 def get_command(device_id):
     cmd = device_commands.get(device_id, "NONE")
     device_commands[device_id] = "NONE"  # 읽으면 초기화
     return jsonify({"command": cmd})
 
+# ================== 직원 이동 ==================
 @app.route("/move/<device_id>")
 def move_staff(device_id):
     if device_id in devices:
         devices[device_id]["status"] = "MOVING"
-        device_commands[device_id] = "MOVE"   # 👈 기기로 보낼 명령
+        device_commands[device_id] = "MOVE"   # 기기로 보낼 명령
     return redirect("/")
 
+# ================== 요청 종료 ==================
 @app.route("/clear/<device_id>", methods=["POST"])
 def clear(device_id):
     d = devices.get(device_id)
@@ -175,10 +186,20 @@ def clear(device_id):
             "reason": reason
         })
 
-        device_commands[device_id] = "STOP"  # 👈 기기로 종료 명령
+        device_commands[device_id] = "STOP"  # 기기로 종료 명령
         devices.pop(device_id, None)
 
-    return redirect("/")
+    return render_template_string("""
+<html>
+<body style="font-family:sans-serif;text-align:center;padding:50px;">
+<h2>요청 종료 완료</h2>
+<a href="/" style="display:inline-block;padding:8px 12px;background:#1976d2;color:white;border-radius:6px;text-decoration:none;">돌아가기</a>
+</body>
+</html>
+""")
 
+# ================== 서버 실행 ==================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
+
