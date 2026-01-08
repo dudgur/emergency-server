@@ -1,15 +1,16 @@
 # -*- coding: utf-8 -*-
-
-from flask import Flask, request, redirect, render_template_string, Response, send_file
-import os
+from flask import Flask, request, redirect, render_template_string, Response
+import requests
 from datetime import datetime
 import time
+import os  # 추가
 
 app = Flask(__name__)
 
+# 데이터 저장소 (주의: Render 무료 서버는 재시작 시 데이터가 초기화됩니다)
 devices = {}
 history = []
-clients = []
+clients = [] 
 
 REASONS = [
     "마트에서 이동 도움",
@@ -17,9 +18,6 @@ REASONS = [
     "결제 도움",
     "기타"
 ]
-
-UPLOAD_DIR = "uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 def elapsed_time_str(start_time, end_time=None):
     if end_time is None:
@@ -45,13 +43,17 @@ def sse():
                     msg = q.pop(0)
                     yield f"data: {msg}\n\n"
                 else:
+                    # Render 환경에서 연결 끊김 방지를 위한 dummy data 전송 가능
                     time.sleep(0.5)
         except GeneratorExit:
-            clients.remove(q)
-    return Response(gen(), mimetype="text/event-stream")
+            if q in clients:
+                clients.remove(q)
+    # 캐싱 방지 헤더 추가 (SSE 안정성 확보)
+    return Response(gen(), mimetype="text/event-stream", headers={'Cache-Control': 'no-cache', 'Transfer-Encoding': 'chunked'})
 
 @app.route("/")
 def index():
+    # 기존 UI 코드 그대로 유지
     return render_template_string("""
 <!DOCTYPE html>
 <html lang="ko">
@@ -95,27 +97,23 @@ if (!!window.EventSource) {
     var source = new EventSource("/events");
     source.onmessage = function(e) {
         if (e.data.startsWith("NEW_DEVICE")) {
-            location.reload();
+            location.reload();  
         }
     };
 }
 </script>
 </head>
 <body>
-
 <h1>긴급 요청 모니터</h1>
-
 {% for id, d in devices.items() %}
 <div class="card">
 <b>{{ id }}</b>
 <span class="{{ 'badge-new' if d.status=='NEW' else 'badge-move' }}">{{ d.status }}</span><br>
 요청 시간: {{ d.time_str }}<br>
 경과 시간: {{ d.elapsed }}<br><br>
-
 <a class="btn view" href="/device/{{ id }}">화면 보기</a>
 <a class="btn move" href="/move/{{ id }}">직원 이동</a>
 <a class="btn clear" href="javascript:void(0)" onclick="showReasonForm('{{ id }}')">종료</a>
-
 <div id="reason-form-{{ id }}" style="display:none; margin-top:8px;">
 <form action="/clear/{{ id }}" method="post">
 <select name="reason" onchange="toggleOtherInput(this)">
@@ -131,9 +129,7 @@ if (!!window.EventSource) {
 {% else %}
 <p>현재 요청이 없습니다.</p>
 {% endfor %}
-
 <hr>
-
 <h1>요청 기록</h1>
 {% for idx, h in enumerate(history) %}
 <div class="history">
@@ -161,7 +157,6 @@ if (!!window.EventSource) {
 {% else %}
 <p>요청 기록이 없습니다.</p>
 {% endfor %}
-
 </body>
 </html>
 """,
@@ -175,49 +170,31 @@ reasons=REASONS,
 enumerate=enumerate
 )
 
+# ... [나머지 라우트(/device, /emergency, /move, /clear, /edit_reason, /delete_history)는 기존과 동일함] ...
 @app.route("/device/<device_id>")
 def view_device(device_id):
+    d = devices.get(device_id)
+    if not d:
+        return "해당 장치를 찾을 수 없습니다.", 404
     return f"""
 <html>
 <head><meta charset="UTF-8"></head>
 <body style="background:black;color:white;text-align:center">
 <h2>{device_id} 요청 화면</h2>
-<img id="cam" src="/image/{device_id}" width="720"><br><br>
+<iframe src="{d['stream_url']}" width="720" height="540"></iframe><br><br>
 <a href="/" style="color:white">←돌아가기</a>
-<script>
-setInterval(function(){{
-    document.getElementById("cam").src = "/image/{device_id}?t=" + new Date().getTime();
-}}, 200);
-</script>
 </body>
 </html>
 """
 
-@app.route("/upload", methods=["POST"])
-def upload():
-    device_id = request.form.get("device_id")
-    file = request.files.get("image")
-    if not device_id or not file:
-        return "Bad Request", 400
-    path = os.path.join(UPLOAD_DIR, f"{device_id}.jpg")
-    file.save(path)
-    return "OK", 200
-
-@app.route("/image/<device_id>")
-def get_image(device_id):
-    path = os.path.join(UPLOAD_DIR, f"{device_id}.jpg")
-    if not os.path.exists(path):
-        return "No Image", 404
-    return send_file(path, mimetype="image/jpeg")
-
 @app.route("/emergency", methods=["POST"])
 def emergency():
     data = request.get_json(silent=True)
-    if not data:
-        return "Invalid JSON", 400
+    if not data: return "Invalid JSON", 400
     device_id = str(data.get("device_id"))
-
+    stream_url = str(data.get("stream_url"))
     devices[device_id] = {
+        "stream_url": stream_url,
         "status": "NEW",
         "time": datetime.now()
     }
@@ -228,8 +205,9 @@ def emergency():
 @app.route("/move/<device_id>")
 def move_staff(device_id):
     d = devices.get(device_id)
-    if not d:
-        return "Not found", 404
+    if not d: return "Not found", 404
+    try: requests.get(d["stream_url"] + "/staff_moving", timeout=2)
+    except: pass
     d["status"] = "MOVING"
     return redirect("/")
 
@@ -237,6 +215,8 @@ def move_staff(device_id):
 def clear(device_id):
     d = devices.get(device_id)
     if d:
+        try: requests.get(d["stream_url"] + "/stop", timeout=1)
+        except: pass
         reason = request.form.get("reason")
         other_reason = request.form.get("other_reason")
         if reason == "기타" and other_reason.strip():
@@ -268,8 +248,11 @@ def delete_history(idx):
         history.pop(idx)
     return redirect("/")
 
+# 렌더 서버 배포를 위한 핵심 수정 부분
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
+
 
 
 
