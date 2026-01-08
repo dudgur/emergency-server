@@ -59,37 +59,59 @@ body { font-family: sans-serif; background:#f4f6f8; padding:16px; }
 
 {% for id, d in devices.items() %}
 <div class="card">
-<b>{{ id }}</b> ({{ d.status }})<br>
+<b>{{ id }}</b>
+<span class="{{ 'badge-new' if d.status=='NEW' else 'badge-move' }}">{{ d.status }}</span><br>
 요청 시간: {{ d.time_str }}<br>
 경과 시간: {{ d.elapsed }}<br><br>
 
-<!-- 버튼과 종료 선택 박스를 한 줄에 -->
 <a class="btn view" href="/device/{{ id }}">화면 보기</a>
 <a class="btn move" href="/move/{{ id }}">직원 이동</a>
+<a class="btn clear" href="javascript:void(0)" onclick="showReasonForm('{{ id }}')">종료</a>
 
-<form class="form-inline" action="/clear/{{ id }}" method="post">
-<select class="select-reason" name="reason">
+<div id="reason-form-{{ id }}" style="display:none; margin-top:8px;">
+<form action="/clear/{{ id }}" method="post">
+<select name="reason" onchange="toggleOtherInput(this)">
 {% for r in reasons %}
 <option value="{{ r }}">{{ r }}</option>
 {% endfor %}
 </select>
-<input class="btn clear" type="submit" value="종료">
+<input type="text" name="other_reason" placeholder="직접 입력" style="display:none;">
+<input type="submit" value="확인">
 </form>
-
+</div>
 </div>
 {% else %}
-<p>현재 요청 없음</p>
+<p>현재 요청이 없습니다.</p>
 {% endfor %}
 
 <hr>
-<h2>요청 기록</h2>
-{% for h in history %}
-<div class="card">
+
+<h1>요청 기록</h1>
+{% for idx, h in enumerate(history) %}
+<div class="history">
 <b>{{ h.device_id }}</b><br>
-{{ h.start_time }} → {{ h.end_time }}<br>
-소요: {{ h.duration }}<br>
+시작 시간: {{ h.start_time }}<br>
+종료 시간: {{ h.end_time }}<br>
+소요 시간: {{ h.duration }}<br>
 사유: {{ h.reason }}
+<form action="/delete_history/{{ idx }}" method="post" style="display:inline;">
+<button class="delete">삭제</button>
+</form>
+<button class="edit-btn" onclick="showEditForm({{ idx }})">수정</button>
+<div id="edit-form-{{ idx }}" style="display:none; margin-top:4px;">
+<form action="/edit_reason/{{ idx }}" method="post">
+<select name="reason" onchange="toggleOtherInput(this)">
+{% for r in reasons %}
+<option value="{{ r }}" {% if r==h.reason %}selected{% endif %}>{{ r }}</option>
+{% endfor %}
+</select>
+<input type="text" name="other_reason" value="{% if h.reason not in reasons %}{{ h.reason }}{% endif %}" style="display:{% if h.reason not in reasons %}inline-block{% else %}none{% endif %};">
+<input type="submit" value="확인">
+</form>
 </div>
+</div>
+{% else %}
+<p>요청 기록이 없습니다.</p>
 {% endfor %}
 
 </body>
@@ -104,27 +126,24 @@ history=history,
 reasons=REASONS
 )
 
-# ================== 화면 보기 페이지 ==================
 @app.route("/device/<device_id>")
 def view_device(device_id):
     return f"""
 <html>
+<head><meta charset="UTF-8"></head>
 <body style="background:black;color:white;text-align:center">
-<h2>{device_id}</h2>
+<h2>{device_id} 요청 화면</h2>
 <img id="cam" src="/image/{device_id}" width="720"><br><br>
-
-<a href="/" style="display:inline-block;padding:8px 12px;background:#1976d2;color:white;border-radius:6px;text-decoration:none;">돌아가기</a>
-
+<a href="/" style="color:white">←돌아가기</a>
 <script>
 setInterval(function(){{
-  document.getElementById("cam").src="/image/{device_id}?t="+new Date().getTime();
-}},300);
+    document.getElementById("cam").src = "/image/{device_id}?t=" + new Date().getTime();
+}}, 200);
 </script>
 </body>
 </html>
 """
 
-# ================== 이미지 업로드 ==================
 @app.route("/upload", methods=["POST"])
 def upload():
     device_id = request.form.get("device_id")
@@ -142,7 +161,6 @@ def get_image(device_id):
         return "No Image", 404
     return send_file(path, mimetype="image/jpeg")
 
-# ================== 긴급 요청 등록 ==================
 @app.route("/emergency", methods=["POST"])
 def emergency():
     data = request.get_json()
@@ -155,14 +173,12 @@ def emergency():
     device_commands[device_id] = "NONE"
     return "OK"
 
-# ================== 기기 명령 확인 ==================
 @app.route("/command/<device_id>")
 def get_command(device_id):
     cmd = device_commands.get(device_id, "NONE")
     device_commands[device_id] = "NONE"  # 읽으면 초기화
     return jsonify({"command": cmd})
 
-# ================== 직원 이동 ==================
 @app.route("/move/<device_id>")
 def move_staff(device_id):
     if device_id in devices:
@@ -170,7 +186,6 @@ def move_staff(device_id):
         device_commands[device_id] = "MOVE"   # 기기로 보낼 명령
     return redirect("/")
 
-# ================== 요청 종료 ==================
 @app.route("/clear/<device_id>", methods=["POST"])
 def clear(device_id):
     d = devices.get(device_id)
@@ -198,8 +213,8 @@ def clear(device_id):
 </html>
 """)
 
-# ================== 서버 실행 ==================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
 
 
