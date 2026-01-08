@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
-from flask import Flask, request, redirect, render_template_string, Response
-import requests
+from flask import Flask, request, redirect, render_template_string, Response, send_file, jsonify
+import os
 from datetime import datetime
 import time
-import os  # 추가
 
 app = Flask(__name__)
 
-# 데이터 저장소 (주의: Render 무료 서버는 재시작 시 데이터가 초기화됩니다)
+# 데이터 저장소
 devices = {}
 history = []
-clients = [] 
+clients = []
+device_commands = {}  # 기기에 내릴 명령 저장 (MOVE, STOP 등)
 
 REASONS = [
     "마트에서 이동 도움",
@@ -18,6 +18,9 @@ REASONS = [
     "결제 도움",
     "기타"
 ]
+
+UPLOAD_DIR = "uploads"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 def elapsed_time_str(start_time, end_time=None):
     if end_time is None:
@@ -32,6 +35,7 @@ def elapsed_time_str(start_time, end_time=None):
     else:
         return f"{s//3600}시간 {(s%3600)//60}분"
 
+# ================== 실시간 알림 (SSE) ==================
 @app.route("/events")
 def sse():
     def gen():
@@ -43,120 +47,113 @@ def sse():
                     msg = q.pop(0)
                     yield f"data: {msg}\n\n"
                 else:
-                    # Render 환경에서 연결 끊김 방지를 위한 dummy data 전송 가능
                     time.sleep(0.5)
         except GeneratorExit:
             if q in clients:
                 clients.remove(q)
-    # 캐싱 방지 헤더 추가 (SSE 안정성 확보)
-    return Response(gen(), mimetype="text/event-stream", headers={'Cache-Control': 'no-cache', 'Transfer-Encoding': 'chunked'})
+    return Response(gen(), mimetype="text/event-stream")
 
+# ================== 메인 관리 화면 ==================
 @app.route("/")
 def index():
-    # 기존 UI 코드 그대로 유지
     return render_template_string("""
 <!DOCTYPE html>
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
 <title>긴급 요청 모니터</title>
-<meta http-equiv="refresh" content="15">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 body { font-family: sans-serif; background:#f4f6f8; margin:0; padding:16px; }
 h1 { margin-bottom: 10px; }
 .card { background:#fff; border-radius:12px; padding:16px; margin-bottom:12px; box-shadow:0 2px 6px rgba(0,0,0,0.1); position:relative; }
-.badge-new { color:white; background:#d32f2f; padding:4px 10px; border-radius:12px; }
-.badge-move { color:white; background:#f57c00; padding:4px 10px; border-radius:12px; }
-.btn { display:inline-block; padding:8px 12px; border-radius:6px; color:white; text-decoration:none; margin-right:6px; }
+.badge-new { color:white; background:#d32f2f; padding:4px 10px; border-radius:12px; font-size:0.8em; }
+.badge-move { color:white; background:#f57c00; padding:4px 10px; border-radius:12px; font-size:0.8em; }
+.btn { display:inline-block; padding:8px 12px; border-radius:6px; color:white; text-decoration:none; margin-right:6px; border:none; cursor:pointer; font-size:14px; }
 .view { background:#1976d2; }
 .move { background:#f57c00; }
 .clear { background:#d32f2f; }
 .history { background:#eceff1; padding:10px; margin-bottom:10px; border-radius:10px; position:relative; }
-.history .delete, .history .edit-btn { position:absolute; right:10px; top:10px; background:#d32f2f; color:white; border:none; padding:3px 6px; border-radius:4px; cursor:pointer; margin-left:4px;}
-.history .edit-btn { background:#1976d2; right:60px; }
-form { margin:0; }
-select, input[type=text] { margin-top:4px; padding:4px 6px; width:200px; border-radius:4px; border:1px solid #ccc; }
+.history .delete { position:absolute; right:10px; top:10px; background:#d32f2f; color:white; border:none; padding:3px 6px; border-radius:4px; cursor:pointer; }
+form { margin:0; display:inline; }
+select, input[type=text] { margin-top:4px; padding:6px; width:180px; border-radius:4px; border:1px solid #ccc; }
+.btn-group { display: flex; gap: 5px; margin-top: 10px; flex-wrap: wrap; }
 </style>
 <script>
 function showReasonForm(deviceId) {
     const formDiv = document.getElementById('reason-form-' + deviceId);
-    formDiv.style.display = 'block';
+    formDiv.style.display = (formDiv.style.display === 'none') ? 'block' : 'none';
 }
 function toggleOtherInput(sel) {
     const otherInput = sel.parentNode.querySelector('input[name="other_reason"]');
     if(sel.value == '기타') { otherInput.style.display='inline-block'; }
     else { otherInput.style.display='none'; }
 }
-function showEditForm(idx) {
-    const div = document.getElementById('edit-form-' + idx);
-    div.style.display = 'block';
-}
 
+// 실시간 자동 새로고침 (새 요청 올 때만)
 if (!!window.EventSource) {
     var source = new EventSource("/events");
     source.onmessage = function(e) {
-        if (e.data.startsWith("NEW_DEVICE")) {
-            location.reload();  
+        if (e.data.startsWith("NEW_DEVICE") || e.data.startsWith("UPDATE")) {
+            location.reload();
         }
     };
 }
 </script>
 </head>
 <body>
-<h1>긴급 요청 모니터</h1>
+
+<h1>🚨 긴급 요청 모니터</h1>
+
 {% for id, d in devices.items() %}
 <div class="card">
-<b>{{ id }}</b>
-<span class="{{ 'badge-new' if d.status=='NEW' else 'badge-move' }}">{{ d.status }}</span><br>
-요청 시간: {{ d.time_str }}<br>
-경과 시간: {{ d.elapsed }}<br><br>
-<a class="btn view" href="/device/{{ id }}">화면 보기</a>
-<a class="btn move" href="/move/{{ id }}">직원 이동</a>
-<a class="btn clear" href="javascript:void(0)" onclick="showReasonForm('{{ id }}')">종료</a>
-<div id="reason-form-{{ id }}" style="display:none; margin-top:8px;">
-<form action="/clear/{{ id }}" method="post">
-<select name="reason" onchange="toggleOtherInput(this)">
-{% for r in reasons %}
-<option value="{{ r }}">{{ r }}</option>
-{% endfor %}
-</select>
-<input type="text" name="other_reason" placeholder="직접 입력" style="display:none;">
-<input type="submit" value="확인">
-</form>
-</div>
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+        <b>기기 ID: {{ id }}</b>
+        <span class="{{ 'badge-new' if d.status=='NEW' else 'badge-move' }}">{{ d.status }}</span>
+    </div>
+    <p style="margin: 8px 0; font-size: 0.9em; color: #555;">
+        요청 시간: {{ d.time_str }}<br>
+        경과 시간: <span style="color:#d32f2f; font-weight:bold;">{{ d.elapsed }}</span>
+    </p>
+
+    <div class="btn-group">
+        <a class="btn view" href="/device/{{ id }}">화면 보기</a>
+        <a class="btn move" href="/move/{{ id }}">직원 이동</a>
+        <button class="btn clear" onclick="showReasonForm('{{ id }}')">종료</button>
+    </div>
+
+    <div id="reason-form-{{ id }}" style="display:none; margin-top:12px; padding:10px; background:#f9f9f9; border-radius:8px;">
+        <form action="/clear/{{ id }}" method="post">
+            <select name="reason" onchange="toggleOtherInput(this)">
+                {% for r in reasons %}
+                <option value="{{ r }}">{{ r }}</option>
+                {% endfor %}
+            </select><br>
+            <input type="text" name="other_reason" placeholder="직접 입력" style="display:none;"><br>
+            <input type="submit" value="종료 확인" class="btn clear" style="margin-top:8px; width:100%;">
+        </form>
+    </div>
 </div>
 {% else %}
-<p>현재 요청이 없습니다.</p>
+<div class="card" style="text-align:center; color:#888;">현재 활성화된 요청이 없습니다.</div>
 {% endfor %}
-<hr>
-<h1>요청 기록</h1>
+
+<hr style="border:0; border-top:1px solid #ccc; margin:20px 0;">
+
+<h1>📋 최근 요청 기록</h1>
 {% for idx, h in enumerate(history) %}
 <div class="history">
-<b>{{ h.device_id }}</b><br>
-시작 시간: {{ h.start_time }}<br>
-종료 시간: {{ h.end_time }}<br>
-소요 시간: {{ h.duration }}<br>
-사유: {{ h.reason }}
-<form action="/delete_history/{{ idx }}" method="post" style="display:inline;">
-<button class="delete">삭제</button>
-</form>
-<button class="edit-btn" onclick="showEditForm({{ idx }})">수정</button>
-<div id="edit-form-{{ idx }}" style="display:none; margin-top:4px;">
-<form action="/edit_reason/{{ idx }}" method="post">
-<select name="reason" onchange="toggleOtherInput(this)">
-{% for r in reasons %}
-<option value="{{ r }}" {% if r==h.reason %}selected{% endif %}>{{ r }}</option>
-{% endfor %}
-</select>
-<input type="text" name="other_reason" value="{% if h.reason not in reasons %}{{ h.reason }}{% endif %}" style="display:{% if h.reason not in reasons %}inline-block{% else %}none{% endif %};">
-<input type="submit" value="확인">
-</form>
-</div>
+    <b>{{ h.device_id }}</b> ({{ h.duration }} 소요)<br>
+    <small>{{ h.start_time }} ~ {{ h.end_time }}</small><br>
+    사유: <b>{{ h.reason }}</b>
+    <form action="/delete_history/{{ idx }}" method="post">
+        <button class="delete">삭제</button>
+    </form>
 </div>
 {% else %}
-<p>요청 기록이 없습니다.</p>
+<p style="color:#888;">기록이 없습니다.</p>
 {% endfor %}
+
 </body>
 </html>
 """,
@@ -170,76 +167,87 @@ reasons=REASONS,
 enumerate=enumerate
 )
 
-# ... [나머지 라우트(/device, /emergency, /move, /clear, /edit_reason, /delete_history)는 기존과 동일함] ...
+# ================== 기기 통신 및 기능 API ==================
+
 @app.route("/device/<device_id>")
 def view_device(device_id):
-    d = devices.get(device_id)
-    if not d:
-        return "해당 장치를 찾을 수 없습니다.", 404
     return f"""
 <html>
-<head><meta charset="UTF-8"></head>
-<body style="background:black;color:white;text-align:center">
-<h2>{device_id} 요청 화면</h2>
-<iframe src="{d['stream_url']}" width="720" height="540"></iframe><br><br>
-<a href="/" style="color:white">←돌아가기</a>
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+<body style="background:black;color:white;text-align:center;margin:0;padding:20px;">
+    <h3>{device_id} 실시간 화면</h3>
+    <img id="cam" src="/image/{device_id}" style="max-width:100%; border:2px solid #333;"><br><br>
+    <a href="/" style="color:white; text-decoration:none; background:#444; padding:10px 20px; border-radius:5px;">← 돌아가기</a>
+    <script>
+    setInterval(function(){{
+        document.getElementById("cam").src = "/image/{device_id}?t=" + new Date().getTime();
+    }}, 300);
+    </script>
 </body>
 </html>
 """
+
+@app.route("/upload", methods=["POST"])
+def upload():
+    device_id = request.form.get("device_id")
+    file = request.files.get("image")
+    if not device_id or not file:
+        return "Bad Request", 400
+    path = os.path.join(UPLOAD_DIR, f"{device_id}.jpg")
+    file.save(path)
+    return "OK", 200
+
+@app.route("/image/<device_id>")
+def get_image(device_id):
+    path = os.path.join(UPLOAD_DIR, f"{device_id}.jpg")
+    if not os.path.exists(path):
+        return "No Image", 404
+    return send_file(path, mimetype="image/jpeg")
 
 @app.route("/emergency", methods=["POST"])
 def emergency():
     data = request.get_json(silent=True)
     if not data: return "Invalid JSON", 400
     device_id = str(data.get("device_id"))
-    stream_url = str(data.get("stream_url"))
-    devices[device_id] = {
-        "stream_url": stream_url,
-        "status": "NEW",
-        "time": datetime.now()
-    }
+    devices[device_id] = {"status": "NEW", "time": datetime.now()}
+    device_commands[device_id] = "NONE"
     for q in clients:
         q.append(f"NEW_DEVICE:{device_id}")
     return "OK", 200
 
+@app.route("/command/<device_id>")
+def get_command(device_id):
+    cmd = device_commands.get(device_id, "NONE")
+    device_commands[device_id] = "NONE"  # 명령 확인 후 초기화
+    return jsonify({"command": cmd})
+
 @app.route("/move/<device_id>")
 def move_staff(device_id):
-    d = devices.get(device_id)
-    if not d: return "Not found", 404
-    try: requests.get(d["stream_url"] + "/staff_moving", timeout=2)
-    except: pass
-    d["status"] = "MOVING"
+    if device_id in devices:
+        devices[device_id]["status"] = "MOVING"
+        device_commands[device_id] = "MOVE"  # 기기에 MOVE 명령 전달
+        for q in clients: q.append("UPDATE")
     return redirect("/")
 
 @app.route("/clear/<device_id>", methods=["POST"])
 def clear(device_id):
     d = devices.get(device_id)
     if d:
-        try: requests.get(d["stream_url"] + "/stop", timeout=1)
-        except: pass
         reason = request.form.get("reason")
-        other_reason = request.form.get("other_reason")
-        if reason == "기타" and other_reason.strip():
-            reason = other_reason.strip()
+        other = request.form.get("other_reason")
+        if reason == "기타" and other: reason = other
+        
         end_time = datetime.now()
-        history.insert(0,{
+        history.insert(0, {
             "device_id": device_id,
             "start_time": d["time"].strftime("%Y-%m-%d %H:%M:%S"),
             "end_time": end_time.strftime("%Y-%m-%d %H:%M:%S"),
             "duration": elapsed_time_str(d["time"], end_time),
             "reason": reason
         })
+        device_commands[device_id] = "STOP"  # 기기에 STOP 명령 전달
         devices.pop(device_id, None)
-    return redirect("/")
-
-@app.route("/edit_reason/<int:idx>", methods=["POST"])
-def edit_reason(idx):
-    if 0 <= idx < len(history):
-        reason = request.form.get("reason")
-        other_reason = request.form.get("other_reason")
-        if reason == "기타" and other_reason.strip():
-            reason = other_reason.strip()
-        history[idx]["reason"] = reason
+        for q in clients: q.append("UPDATE")
     return redirect("/")
 
 @app.route("/delete_history/<int:idx>", methods=["POST"])
@@ -248,10 +256,11 @@ def delete_history(idx):
         history.pop(idx)
     return redirect("/")
 
-# 렌더 서버 배포를 위한 핵심 수정 부분
 if __name__ == "__main__":
+    # Render 배포용 포트 설정
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port, debug=False)
+
 
 
 
