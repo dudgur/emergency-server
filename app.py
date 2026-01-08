@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
-from flask import Flask, request, redirect, render_template_string, Response, send_file, jsonify
+from flask import Flask, request, redirect, render_template_string, send_file, jsonify
 import os
 from datetime import datetime
 
 app = Flask(__name__)
 
+# ================== 데이터 저장 ==================
 devices = {}
 history = []
 device_commands = {}  # 기기에 내릴 명령 저장
@@ -45,7 +46,7 @@ def index():
 <style>
 body { font-family: sans-serif; background:#f4f6f8; padding:16px; }
 .card { background:#fff; border-radius:12px; padding:16px; margin-bottom:12px; box-shadow:0 2px 6px rgba(0,0,0,0.1); }
-.btn { display:inline-block; padding:8px 12px; border-radius:6px; color:white; text-decoration:none; margin-right:6px; }
+.btn { display:inline-block; padding:8px 12px; border-radius:6px; color:white; text-decoration:none; margin-right:6px; cursor:pointer; }
 .move { background:#f57c00; }
 .clear { background:#d32f2f; }
 .view { background:#1976d2; }
@@ -63,10 +64,10 @@ body { font-family: sans-serif; background:#f4f6f8; padding:16px; }
 요청 시간: {{ d.time_str }}<br>
 경과 시간: {{ d.elapsed }}<br><br>
 
-<!-- 버튼과 종료 선택 박스를 한 줄에 -->
+<!-- 버튼 및 종료 폼 -->
 <a class="btn view" href="/device/{{ id }}">화면 보기</a>
 <a class="btn move" href="/move/{{ id }}">직원 이동</a>
-<a class="btn clear" href="javascript:void(0)" onclick="showReasonForm('{{ id }}')">종료</a>
+<a class="btn clear" onclick="toggleReasonForm('{{ id }}')">종료</a>
 
 <div id="reason-form-{{ id }}" style="display:none; margin-top:8px;">
 <form action="/clear/{{ id }}" method="post">
@@ -76,7 +77,7 @@ body { font-family: sans-serif; background:#f4f6f8; padding:16px; }
 {% endfor %}
 </select>
 <input type="text" name="other_reason" placeholder="직접 입력" style="display:none;">
-<input type="submit" value="확인">
+<input type="submit" value="확인" class="btn clear">
 </form>
 </div>
 </div>
@@ -85,48 +86,28 @@ body { font-family: sans-serif; background:#f4f6f8; padding:16px; }
 {% endfor %}
 
 <hr>
-
 <h1>요청 기록</h1>
-{% for idx, h in enumerate(history) %}
+{% for h in history %}
 <div class="history">
 <b>{{ h.device_id }}</b><br>
 시작 시간: {{ h.start_time }}<br>
 종료 시간: {{ h.end_time }}<br>
 소요 시간: {{ h.duration }}<br>
 사유: {{ h.reason }}
-<form action="/delete_history/{{ idx }}" method="post" style="display:inline;">
-<button class="delete">삭제</button>
-</form>
-<button class="edit-btn" onclick="showEditForm({{ idx }})">수정</button>
-<div id="edit-form-{{ idx }}" style="display:none; margin-top:4px;">
-<form action="/edit_reason/{{ idx }}" method="post">
-<select name="reason" onchange="toggleOtherInput(this)">
-{% for r in reasons %}
-<option value="{{ r }}" {% if r==h.reason %}selected{% endif %}>{{ r }}</option>
-{% endfor %}
-</select>
-<input type="text" name="other_reason" value="{% if h.reason not in reasons %}{{ h.reason }}{% endif %}" style="display:{% if h.reason not in reasons %}inline-block{% else %}none{% endif %};">
-<input type="submit" value="확인">
-</form>
-</div>
 </div>
 {% else %}
 <p>요청 기록이 없습니다.</p>
 {% endfor %}
 
 <script>
-// 종료 버튼 클릭 시 폼 보이기
-function showReasonForm(id){
+function toggleReasonForm(id){
     const form = document.getElementById('reason-form-' + id);
-    if(form.style.display === 'none') form.style.display = 'block';
-    else form.style.display = 'none';
+    form.style.display = (form.style.display === 'none') ? 'block' : 'none';
 }
 
-// 기타 선택 시 입력창 토글
 function toggleOtherInput(select){
     const input = select.nextElementSibling;
-    if(select.value === '기타') input.style.display = 'inline-block';
-    else input.style.display = 'none';
+    input.style.display = (select.value === '기타') ? 'inline-block' : 'none';
 }
 </script>
 
@@ -142,7 +123,7 @@ history=history,
 reasons=REASONS
 )
 
-# ================== 화면 보기 페이지 ==================
+# ================== 화면 보기 ==================
 @app.route("/device/<device_id>")
 def view_device(device_id):
     return f"""
@@ -184,7 +165,6 @@ def get_image(device_id):
 def emergency():
     data = request.get_json()
     device_id = str(data.get("device_id"))
-
     devices[device_id] = {
         "status": "NEW",
         "time": datetime.now()
@@ -204,7 +184,7 @@ def get_command(device_id):
 def move_staff(device_id):
     if device_id in devices:
         devices[device_id]["status"] = "MOVING"
-        device_commands[device_id] = "MOVE"   # 기기로 보낼 명령
+        device_commands[device_id] = "MOVE"
     return redirect("/")
 
 # ================== 요청 종료 ==================
@@ -214,11 +194,10 @@ def clear(device_id):
     if d:
         reason = request.form.get("reason")
         if reason == "기타":
-            other_reason = request.form.get("other_reason", "").strip()
-            if other_reason != "":
-                reason = other_reason
+            other = request.form.get("other_reason","").strip()
+            if other != "":
+                reason = other
         end_time = datetime.now()
-
         history.insert(0,{
             "device_id": device_id,
             "start_time": d["time"].strftime("%Y-%m-%d %H:%M:%S"),
@@ -226,10 +205,8 @@ def clear(device_id):
             "duration": elapsed_time_str(d["time"], end_time),
             "reason": reason
         })
-
-        device_commands[device_id] = "STOP"  # 기기로 종료 명령
+        device_commands[device_id] = "STOP"
         devices.pop(device_id, None)
-
     return render_template_string("""
 <html>
 <body style="font-family:sans-serif;text-align:center;padding:50px;">
@@ -242,6 +219,8 @@ def clear(device_id):
 # ================== 서버 실행 ==================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
+
 
 
 
