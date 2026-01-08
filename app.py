@@ -111,7 +111,7 @@ if (!!window.EventSource) {
 <span class="{{ 'badge-new' if d.status=='NEW' else 'badge-move' }}">{{ d.status }}</span><br>
 요청 시간: {{ d.time_str }}<br>
 경과 시간: {{ d.elapsed }}<br><br>
-<a class="btn view" href="/device/{{ id }}">화면</a>
+<a class="btn view" href="/device/{{ id }}">화면 보기</a>
 <a class="btn move" href="/move/{{ id }}">직원 이동</a>
 <a class="btn clear" href="javascript:void(0)" onclick="showReasonForm('{{ id }}')">종료</a>
 <div id="reason-form-{{ id }}" style="display:none; margin-top:8px;">
@@ -252,6 +252,7 @@ def delete_history(idx):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
